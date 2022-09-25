@@ -25,7 +25,7 @@ from amplpy import AMPL
 # print out more run info
 debug = True
 
-# don't solve original problem
+# solve original problem?
 solveOriginal = True
 #solveOriginal = False
 
@@ -40,7 +40,7 @@ myInf = 1e30
 #jllEPS = sorted([0.15, 0.2, 0.25, 0.3, 0.35, 0.4]) #SEA22 subm
 #jllEPS = sorted([0.1, 0.125, 0.15, 0.175]) #meaningful
 jllEPS = sorted([0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]) #JEA
-#jllEPS = sorted([0.05, 0.1, 0.15, 0.2]) # JEA test2 for quantreg
+#jllEPS = sorted([0.05, 0.1, 0.15, 0.2]) # test2 for quantreg
 runsPerEps = 5   # how many times we solve instance for each epsilon
 ## or just run once
 #jllEPS = [0.1]
@@ -50,17 +50,17 @@ runsPerEps = 5   # how many times we solve instance for each epsilon
 RPDensFactor = 0.5 # set RP density at RPDensFactor * [Ax=b density]
 universalConstant = 1.0
 
-# LP structures 
+# possible LP structures 
 instanceTypes = ["basis pursuit", "diet", "max flow", "quantile regression", "uniform"]
 
 # python starts from zero, AMPL starts from 1
-offset = 1
+offset = 1 # don't touch this unless you know what you're doing
 
 ## solver and options
 LPSolver = "cplex"
-## barrier solver for projected problem
-#cplexoptions = "baropt crossover=0 display=1 bardisplay=1"
-cplexoptions = "autopt display=1"
+# barrier solver for projected problem
+cplexoptions = "baropt crossover=0 display=1 bardisplay=1"
+#cplexoptions = "autopt display=1" # or let CPLEX choose strategy for projected problem
 
 # sparse or dense algebra (option only applicable to maxflow)
 sparseFlag = False
@@ -84,14 +84,14 @@ AltProjMaxItn = 30  # number of iterations for feasibility alt proj
 AltProjTol = 0.1     # error tolerance for alt proj
 
 ## file names
-csvName = "rp4lp.csv"
+csvName = "rp4lp.csv" # performance measures in output
 
+# AMPL model files
 maxflowMod = "maxflow.mod"
 dietMod = "diet.mod"
 quantregMod = "quantreg.mod"
 basispursuitMod = "basispursuit.mod"
 uniformMod = "uniform.mod"
-
 maxflowProjMod = "maxflowprj.mod"
 #dietProjMod = "dietprj.mod"  # in SEA22 paper
 #dietProjMod = "dietprj1.mod" # n.1 in JEA paper
@@ -100,12 +100,12 @@ quantregProjMod = "quantregprj.mod"
 basispursuitProjMod = "basispursuit.mod"
 uniformProjMod = "uniform.mod"
 
+# AMPL data files
 basispursuitDat = "basispursuit.dat"
 maxflowDat = "maxflow.dat"
 dietDat = "diet.dat"
 quantregDat = "quantreg.dat"
 uniformDat = "uniform.dat"
-
 basispursuitProjDat = "basispursuitprj.dat"
 maxflowProjDat = "maxflowprj.dat"
 dietProjDat = "dietprj.dat"
