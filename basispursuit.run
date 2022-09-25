@@ -1,0 +1,13 @@
+# basispursuit.run
+
+model basispursuit.mod;
+data basispursuit.dat;
+option solver cplex;
+solve;
+
+display x, org;
+display ell1error;
+
+param diff;
+let diff := sum{j in N} abs(org[j] - x[j]);
+display diff;

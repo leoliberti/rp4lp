@@ -1,0 +1,8 @@
+# maxflow.run
+
+model maxflow.mod;
+data maxflow.dat;
+option solver cplex;
+solve;
+display x;
+display sourceflow;

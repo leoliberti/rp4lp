@@ -1,0 +1,9 @@
+# diet.run
+
+model diet.mod;
+data diet.dat;
+option solver cplex;
+solve;
+
+display x;
+display cost;

@@ -1,0 +1,10 @@
+# quantreg.run
+
+model quantreg.mod;
+data quantreg.dat;
+option solver cplex;
+solve;
+
+display beta;
+display error;
+
