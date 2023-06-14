@@ -25,9 +25,9 @@ from amplpy import AMPL
 # print out more run info
 debug = True
 
-# solve original problem?
+# don't solve original problem
 solveOriginal = True
-#solveOriginal = False
+#solveOriginal = False ## doesn't work here
 
 # used in writing out large .dat files
 outLineBuffer = 500
@@ -39,28 +39,34 @@ myInf = 1e30
 ## perform RP experiments
 #jllEPS = sorted([0.15, 0.2, 0.25, 0.3, 0.35, 0.4]) #SEA22 subm
 #jllEPS = sorted([0.1, 0.125, 0.15, 0.175]) #meaningful
-jllEPS = sorted([0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]) #JEA
-#jllEPS = sorted([0.05, 0.1, 0.15, 0.2]) # test2 for quantreg
-runsPerEps = 5   # how many times we solve instance for each epsilon
+#jllEPS = sorted([0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]) #JEA
+#jllEPS = sorted([0.05, 0.1, 0.15, 0.2]) # JEA test2 for quantreg
+#runsPerEps = 5   # how many times we solve instance for each epsilon
 ## or just run once
-#jllEPS = [0.1]
-#runsPerEps = 1
+jllEPS = [0.5]
+runsPerEps = 1
 
 # some other values used in sampling RP
 RPDensFactor = 0.5 # set RP density at RPDensFactor * [Ax=b density]
 universalConstant = 1.0
 
-# possible LP structures 
+# LP structures 
 instanceTypes = ["basis pursuit", "diet", "max flow", "quantile regression", "uniform"]
 
 # python starts from zero, AMPL starts from 1
-offset = 1 # don't touch this unless you know what you're doing
+offset = 1
 
 ## solver and options
-LPSolver = "cplex"
-# barrier solver for projected problem
-cplexoptions = "baropt crossover=0 display=1 bardisplay=1"
-#cplexoptions = "autopt display=1" # or let CPLEX choose strategy for projected problem
+LPSolverOrg = "cplex"
+cplexoptions = "autopt display=1"
+orgoptions = cplexoptions
+#LPSolverPrj = "highs"
+LPSolverPrj = "cplex"
+## barrier solver for projected problem
+prjcplexoptions = "baropt crossover=0 display=1 bardisplay=1"
+highsoptions = "alg:method=ipm lim:ipmiterationlimit=10 tech:outlev=1"
+#prjoptions = highsoptions
+prjoptions = prjcplexoptions
 
 # sparse or dense algebra (option only applicable to maxflow)
 sparseFlag = False
@@ -80,32 +86,36 @@ slackCoeff = 10.0
 AltProjRetr = True   # use alternating projection post-retrieval
 #AltProjOpt = True    # also try and improve optimality
 AltProjOpt = False   # only limit to feasibility 
-AltProjMaxItn = 30  # number of iterations for feasibility alt proj
-AltProjTol = 0.1     # error tolerance for alt proj
+AltProjMaxItn = 30   # number of iterations for feasibility alt proj
+AltProjTol = 0.01    # error tolerance for alt proj
+#AltProjMethod = "AARM"       # Artacho et al's Averaged APM (AARM)
+#AltProjMethod = "vonNeumann" # von Neumann's original APM
+AltProjMethod = "Dykstra"    # Dykstra's APM
+#AltProjMethod = "locslv"    # a few iterations with a local solver
 
 ## file names
-csvName = "rp4lp.csv" # performance measures in output
+csvName = "rp4lp.csv"
 
-# AMPL model files
 maxflowMod = "maxflow.mod"
 dietMod = "diet.mod"
 quantregMod = "quantreg.mod"
 basispursuitMod = "basispursuit.mod"
 uniformMod = "uniform.mod"
+
 maxflowProjMod = "maxflowprj.mod"
 #dietProjMod = "dietprj.mod"  # in SEA22 paper
-#dietProjMod = "dietprj1.mod" # n.1 in JEA paper
+dietProjMod = "dietprj1.mod"  # n.1 in JEA paper
 dietProjMod = "dietprj2.mod"  # n.2 in JEA paper
 quantregProjMod = "quantregprj.mod"
 basispursuitProjMod = "basispursuit.mod"
 uniformProjMod = "uniform.mod"
 
-# AMPL data files
 basispursuitDat = "basispursuit.dat"
 maxflowDat = "maxflow.dat"
 dietDat = "diet.dat"
 quantregDat = "quantreg.dat"
 uniformDat = "uniform.dat"
+
 basispursuitProjDat = "basispursuitprj.dat"
 maxflowProjDat = "maxflowprj.dat"
 dietProjDat = "dietprj.dat"
@@ -597,7 +607,7 @@ def maxFlow(data, t0, jlleps, runOrg, fstar=None, xstar=None):
         assert(xstar is not None)
     
     (n,s,t,AA,u) = parseMaxFlow(data)
-    xlen = len(AA)
+    xlen = len(AA) # number of arcs
     
     # density of the flow matrix (each arc yields 2 nonzeros)
     # => density = 2*|AA| / (n*|AA|) = 2/n
@@ -610,49 +620,7 @@ def maxFlow(data, t0, jlleps, runOrg, fstar=None, xstar=None):
     for h,(i,j) in enumerate(AA):
         arc2col[(i,j)] = h
         col2arc[h] = (i,j)
-    
-    if runOrg:
-        # out original instance (for fair CPU comparison)
-        outDatMaxFlow(n,s,t,AA,u)
 
-        # solve original formulation
-        maxflow = AMPL()
-        maxflow.setOption("solver", LPSolver)
-        ## prefer default setting on original problem
-        #solver_options = LPSolver + "_options"
-        #maxflow.setOption(solver_options, cplexoptions)
-        maxflow.read(maxflowMod)
-        maxflow.readData(maxflowDat)
-        maxflow.solve()
-
-        # get optimal objective value
-        objfun = maxflow.getObjective("sourceflow")
-        fstar = objfun.value()
-
-        # get optimal solution
-        xvar = maxflow.getVariable("x")
-        xstar = np.zeros(xlen)
-        for h,(i,j) in enumerate(AA):
-            xstar[h] = xvar[i,j].value()
-
-        # dual solution norm and theta estimate
-        cons = maxflow.getConstraint("flowcons")
-        dual = np.zeros(n-2)
-        h = 0
-        for i in range(n):
-            h1 = i + offset
-            if h1 not in [s,t]:
-                dual[h] = cons[h1].dual()
-                h += 1
-        normdual = np.linalg.norm(dual)
-    else:
-        normdual = 0.0
-        
-    thetaest = xlen
-    theta = sum(xstar)
-        
-    torg = time.time() - t0
-    
     # create matrix A for Ax=0 flow constrs
     if debug:
         print("rp4lp:maxflow: creating flow matrix")
@@ -685,9 +653,62 @@ def maxFlow(data, t0, jlleps, runOrg, fstar=None, xstar=None):
     if debug:
         print("rp4lp:maxflow: creating objfun vector")
     c = np.zeros(xlen)
+    # only objfun coeffs to be 1.0 are those indexed by (s,j)
     for (i,j) in AA:
         if i == s:
             c[arc2col[(i,j)]] = 1.0
+        
+    if runOrg:
+        # out original instance (we could use the original .dat, but this
+        #   would be unfair comparison since we're using AMPLpy in org and prj,
+        #   and AMPL requires a .dat file even for prj: so we're computing the
+        #   projected data in Python and outputting the projected data as .dat;
+        #   this would not be the case if we used a different solver interface)
+        # (not unfair if we use scipy.linprog though)
+        outDatMaxFlow(n,s,t,AA,u)
+        # solve original formulation with AMPLpy and CPLEX
+        maxflow = AMPL()
+        maxflow.setOption("solver", LPSolverOrg)
+        # for default setting, comment out the two following lines
+        solver_options = LPSolverOrg + "_options"
+        maxflow.setOption(solver_options, orgoptions)
+        maxflow.read(maxflowMod)
+        maxflow.readData(maxflowDat)
+        maxflow.solve()
+        # get optimal objective value
+        objfun = maxflow.getObjective("sourceflow")
+        fstar = objfun.value()
+        # get optimal solution
+        xvar = maxflow.getVariable("x")
+        xstar = np.zeros(xlen)
+        for h,(i,j) in enumerate(AA):
+            xstar[h] = xvar[i,j].value()
+        # dual solution norm and theta estimate
+        cons = maxflow.getConstraint("flowcons")
+        dual = np.zeros(n-2)
+        h = 0
+        for i in range(n):
+            h1 = i + offset
+            if h1 not in [s,t]:
+                dual[h] = cons[h1].dual()
+                h += 1
+        normdual = np.linalg.norm(dual)
+
+        # # solve original formulation with scipy.linprog
+        # b = np.zeros(n-2)
+        # l1 = np.zeros(xlen)
+        # u1 = np.array([u[col2arc[i]] for i in range(xlen)]) # UB on capacities
+        # LUbnd = list(zip(l1,u1))
+        # res = scipy.optimize.linprog(-c, A_eq=A, b_eq=b, bounds=LUbnd, options={"disp":True})
+        # xstar = res.get('x')
+        # fstar = np.dot(c,xstar)
+        
+    else:
+        normdual = 0.0        
+    thetaest = xlen
+    theta = sum(xstar)        
+    torg = time.time() - t0
+    
             
     # sample random projector
     jlldens = RPDensFactor * constrdens
@@ -709,34 +730,49 @@ def maxFlow(data, t0, jlleps, runOrg, fstar=None, xstar=None):
     else:
         TA = np.dot(T,A)                     #dense
 
-    # out projected .dat file
-    if debug:
-        print("rp4lp:maxflow: writing projected .dat file")    
-    outProjDatMaxFlow(n,s,t,u,c,TA, AA,arc2col)
-
-    # solve projected formulation
+    tsample = time.time() - torg - t0
+        
+    ## solve projected formulation
     if debug:
         print("rp4lp:maxflow: solving projected instance")
-    maxflowprj = AMPL()
-    maxflowprj.setOption("solver", LPSolver)
-    solver_options = LPSolver + "_options"
-    maxflowprj.setOption(solver_options, cplexoptions)
-    maxflowprj.read(maxflowProjMod)
-    maxflowprj.readData(maxflowProjDat)
-    maxflowprj.solve()
+    ## out projected .dat file
+    # if debug:
+    #    print("rp4lp:maxflow: writing projected .dat file")    
+    # outProjDatMaxFlow(n,s,t,u,c,TA, AA,arc2col)
+    # maxflowprj = AMPL()
+    # maxflowprj.setOption("solver", LPSolverPrj)
+    # solver_options = LPSolverPrj + "_options"
+    # maxflowprj.setOption(solver_options, prjoptions)
+    # maxflowprj.read(maxflowProjMod)
+    # maxflowprj.readData(maxflowProjDat)
+    # maxflowprj.solve()
+    # # get optimal objective value
+    # objfunprj = maxflowprj.getObjective("sourceflow")
+    # fproj = objfunprj.value()
+    # # get optimal solution
+    # xvarprj = maxflowprj.getVariable("x")
+    # xproj = np.zeros(xlen)
+    # for h in range(xlen):
+    #     xproj[h] = xvarprj[h+1].value()
 
-    # get optimal objective value
-    objfunprj = maxflowprj.getObjective("sourceflow")
-    fproj = objfunprj.value()
-
-    # get optimal solution
-    xvarprj = maxflowprj.getVariable("x")
-    xproj = np.zeros(xlen)
-    for h in range(xlen):
-        xproj[h] = xvarprj[h+1].value()
-
-    # solution retrieval: find xretr s.t. A*xretr = b-A*xproj, i.e.
-    #   xretr = xproj + pinv(A)*(b-A*xproj) = xproj - pinv(A)*A*xproj
+    # solve projected problem with linprog (highs)
+    Tb = np.zeros(k)
+    l1 = np.zeros(xlen)
+    u1 = np.array([u[col2arc[i]] for i in range(xlen)]) # UB on capacities
+    LUbnd = list(zip(l1,u1))
+    res = scipy.optimize.linprog(-c, A_eq=TA, b_eq=Tb, bounds=LUbnd, options={"disp":True})
+    xproj = res.get('x')
+    fproj = np.dot(c,xproj)
+        
+    tprjslv = time.time() - tsample - torg - t0
+        
+    # solution retrieval: find xretr s.t. A*xretr = b-A*xproj
+    ## method 1: pseudoinverse: xretr = pinv(A) * (b-A*xproj)
+    # pinvA = np.linalg.pinv(A.todense()) 
+    # rhs = A@xproj # because b=0 in maxflow problem
+    # xretr = np.array(xproj - pinvA@rhs)
+    # xretr = np.squeeze(xretr) # can't squeeze in-place
+    ## method 2: least squares
     if sparseFlag:
         Axproj = A.dot(xproj)
         (xpart,status,iterations,err1,err2,normA,condA,normxx) = scipy.sparse.linalg.lsmr(A,Axproj) # for maxflow: b=0 so b-Axproj = -Axproj ('-' applied later)
@@ -748,12 +784,15 @@ def maxFlow(data, t0, jlleps, runOrg, fstar=None, xstar=None):
         xretr = xproj - np.linalg.lstsq(A, np.dot(A, xproj))      #faster
     #endif sparseFlag
     fretr = np.dot(c, xretr)
-
+    
     if AltProjRetr:
         b = np.zeros(n-2)
-        u1 = np.array([u[col2arc[i]] for i in range(xlen)])
-        xretr,fretr,apstat,apitn,bnderr,feaserr = altProjRetrieval(xretr, A, b, c, fproj, objfundir, upp=u1)
+        u1 = np.array([u[col2arc[i]] for i in range(xlen)]) # UB on capacities
+        xretr,fretr,apstat,apitn,bnderr,feaserr = altProjRetrieval(xretr, A, b, c, fproj, objfundir, upp=u1, xp=xproj)
+        if debug:
+            print("post-apm:<c,xproj>={}, <c,xretr>={}".format(np.dot(c,xproj),fretr))
         
+    tretr = time.time() - tprjslv - tsample - torg - t0    
     tprj = time.time() - torg - t0
 
     # performance measures
@@ -792,7 +831,8 @@ def maxFlow(data, t0, jlleps, runOrg, fstar=None, xstar=None):
     print("rp4lp:out:xretr:ineqerr: avg={0:f} max={1:f}".format(avgineqinfeas, maxineqinfeas))
     print("rp4lp:out:xretr:Aberr: avg={0:f} max={1:f}".format(avgAbinfeas, maxAbinfeas))
     print("rp4lp:out:objfun: fstar={0:f} fproj={1:f} fretr={2:f}".format(fstar,fproj,fretr))
-    print("rp4lp:out:time: torg={0:.2f} tprj={1:.2f}".format(torg,tprj))
+    print("rp4lp:out:time:labels:torg,tprj,tsample,tprjslv,tretr")
+    print("rp4lp:out:time:{:.2f},{:.2f},{:.2f},{:.2f},{:.2f}".format(torg,tprj,tsample,tprjslv,tretr))
 
     formulation = (dimorg, dimprj, xlen, constrdens, nnzorg, nnzprj, thetaest)
     objective = (fstar, fproj, fretr)
@@ -803,37 +843,18 @@ def maxFlow(data, t0, jlleps, runOrg, fstar=None, xstar=None):
 
 def Diet(data, t0, jlleps, runOrg, fstar=None, xstar=None):
 
-    objfundir = -1.0 # minimization
-
     if not solveOriginal:
         runOrg = False
+    
+    objfundir = -1.0 # minimization
+
+    if not runOrg:
+        assert(fstar is not None)
+        assert(xstar is not None)
     
     # diet problem
     (m,n,bdict,cdict,Ddict) = parseDiet(data)
     
-    # density
-    dD = len(Ddict) / (m*n)
-    constrdens = (dD*n + 1) / (n+m)
-
-    # sample random projector
-    jlldens = RPDensFactor * constrdens
-    if debug:
-        print("rp4lp:diet: sampling RP with density={0:f}, |X|={1:d}".format(jlldens, n+m))
-    k = int(round((1/jlleps)**2) * math.log(float(n+m)))
-    if k > m:
-        print("rp4lp:diet: {0:d} = k > m = {1:d}".format(k,m))
-    T = sparse_gaussian(k, m, jlldens) / math.sqrt(k*jlldens)
-    if debug:
-        print("rp4lp:diet: projecting from {0:d} to {1:d} rows".format(m,k))
-    
-    # formulation type?
-    dietRowsDiff = m # default: min cq + 1r
-    dprjfrm2 = False
-    if dietProjMod == "dietprj2.mod":
-        # min cq + 1(r+ + r-)
-        dprjfrm2 = True
-        dietRowsDiff = 2*k
-        
     if not runOrg:
         fstar = myInf
         xstar = np.ones(n)
@@ -846,38 +867,36 @@ def Diet(data, t0, jlleps, runOrg, fstar=None, xstar=None):
     b = np.zeros(m)
     for i in bdict:
         b[i-offset] = bdict[i]
+    c = np.zeros(n)
+    for j in cdict:
+        c[j-offset] = cdict[j]
     
     if runOrg:
         # out original instance
         outDatDiet(m,n,bdict,cdict,Ddict)
-
         # solve original formulation
         diet = AMPL()
-        diet.setOption("solver", LPSolver)
-        ## prefer default setting on original problem
-        #solver_options = LPSolver + "_options"
-        #diet.setOption(solver_options, cplexoptions)
+        diet.setOption("solver", LPSolverOrg)
+        # for default settings, comment out the two following lines
+        solver_options = LPSolverOrg + "_options"
+        diet.setOption(solver_options, orgoptions)
         diet.read(dietMod)
         diet.readData(dietDat)
         diet.solve()
-
         # get optimal objective value
         objfun = diet.getObjective("cost")
         fstar = objfun.value()
-
         # get optimal solution
         xvar = diet.getVariable("x")
         xstar = np.zeros(n)
         for i in range(n):
             xstar[i] = xvar[i+offset].value()
-
         # dual solution norm
         cons = diet.getConstraint("nutrient")
         dual = np.zeros(m)
         for i in range(m):
             dual[i] = cons[i+offset].dual()
         normdual = np.linalg.norm(dual)
-
         # theta estimate
         qhat = np.zeros(n)
         eta = {i+offset:0 for i in range(m)}
@@ -897,6 +916,7 @@ def Diet(data, t0, jlleps, runOrg, fstar=None, xstar=None):
         thetaest = sum(qhat) + sum(rhat)
         rstar = Dmat.dot(xstar) - b
         theta = sum(xstar) + sum(rstar)
+        
     else:
         rstar = Dmat.dot(xstar) - b
         thetaest = sum(xstar) + sum(rstar)
@@ -905,44 +925,83 @@ def Diet(data, t0, jlleps, runOrg, fstar=None, xstar=None):
 
     torg = time.time() - t0
 
-    # create matrix A for Ax=b constraints
-    Ds = scipy.sparse.csr_matrix(Dmat)
-    if dprjfrm2:
-        Is = scipy.sparse.identity(dietRowsDiff/2, format='csr')
-        A = Ds
-    else:        
-        Is = scipy.sparse.identity(dietRowsDiff, format='csr')
-        A = scipy.sparse.hstack([Ds, -1.0*Is])
-        
+    ## projected formulation
+    
+    # density
+    dD = len(Ddict) / (m*n)
+    constrdens = (dD*n + 1) / (n+m)
+
+    # sample random projector
+    jlldens = RPDensFactor * constrdens
+    if debug:
+        print("rp4lp:diet: sampling RP with density={0:f}, |X|={1:d}".format(jlldens, n+m))
+    k = int(round((1/jlleps)**2) * math.log(float(n+m)))
+    if k > m:
+        print("rp4lp:diet: {0:d} = k > m = {1:d}".format(k,m))
+    T = sparse_gaussian(k, m, jlldens) / math.sqrt(k*jlldens)
+    if debug:
+        print("rp4lp:diet: projecting from {0:d} to {1:d} rows".format(m,k))
+    
+    # projected formulation type?
+    dietRowsDiff = m # default: min cq + 1r
+    dprjfrm2 = False
+    if dietProjMod == "dietprj2.mod":
+        # min cq + 1(r+ - r-)
+        dprjfrm2 = True
+        dietRowsDiff = 2*k
+    
     # generate projected data
-    TA = scipy.sparse.csr_matrix.dot(T,A)
+    Ds = scipy.sparse.csr_matrix(Dmat) # sparse version of D constraint matrix
     if dprjfrm2:
-        TA = scipy.sparse.hstack([TA, Is, Is])
+        # min cq + 1(r+ + r-) # vars r+,r- are in R^k
+        # prepare A, I_k: then use (TA,I_k,-I_k)
+        Is = scipy.sparse.identity(dietRowsDiff/2, format='csr') # I_k
+        A = Ds
+        TA = scipy.sparse.hstack([T@A, Is, -1.0*Is])
+    else:        
+        # default: min cq + 1r # vars r are in R^m
+        # prepare A=(D,-I_m): then use TA=(TD,-TI_m)
+        Is = scipy.sparse.identity(dietRowsDiff, format='csr') # I_m
+        A = scipy.sparse.hstack([Ds, -1.0*Is])
+        TA = scipy.sparse.csr_matrix.dot(T,A)             
     Tb = T.dot(b)
-    # output projected instance
-    outProjDatDiet(m,n,cdict,k,TA,Tb)
-        
-    # solve projected formulation
+
+    tsample = time.time() - torg - t0
+
+    ## solve projected formulation
     if debug:
         print("rp4lp:diet: solving projected instance")
-    dietprj = AMPL()
-    dietprj.setOption("solver", LPSolver)
-    solver_options = LPSolver + "_options"
-    dietprj.setOption(solver_options, cplexoptions)
-    dietprj.read(dietProjMod)
-    dietprj.readData(dietProjDat)
-    dietprj.solve()
+    # output projected instance
+    #outProjDatDiet(m,n,cdict,k,TA,Tb)
+    # dietprj = AMPL()
+    # dietprj.setOption("solver", LPSolverPrj)
+    # solver_options = LPSolverPrj + "_options"
+    # dietprj.setOption(solver_options, prjoptions)
+    # dietprj.read(dietProjMod)
+    # dietprj.readData(dietProjDat)
+    # dietprj.solve()
+    # # get optimal objective value
+    # objfunprj = dietprj.getObjective("costprj")
+    # fproj = objfunprj.value()
+    # # get optimal solution
+    # xsvarprj = dietprj.getVariable("xs")
+    # xsproj = np.zeros(n+dietRowsDiff)
+    # for j in range(n+dietRowsDiff):
+    #     xsproj[j] = xsvarprj[j+1].value()
+    # xproj = xsproj[0:n]
 
-    # get optimal objective value
-    objfunprj = dietprj.getObjective("costprj")
-    fproj = objfunprj.value()
-
-    # get optimal solution
-    xsvarprj = dietprj.getVariable("xs")
-    xsproj = np.zeros(n+dietRowsDiff)
-    for j in range(n+dietRowsDiff):
-        xsproj[j] = xsvarprj[j+1].value()
+    # solve projected problem with linprog (highs)
+    if dprjfrm2:
+        cc = np.pad(c, (0,2*k)) # c becomes an (n+2k)-array
+    else:
+        cc = np.pad(c, (0,m))   # c becomes an (n+m)-array
+    res = scipy.optimize.linprog(cc, A_eq=TA, b_eq=Tb, options={"disp":True})
+    xsproj = res.get('x')
     xproj = xsproj[0:n]
+    fproj = np.dot(c,xproj)
+
+    tprjslv = time.time() - tsample - torg - t0
+    
     if retrJLLMOR:
         ## this code snippet does not work with dprjfrm2=True
         # solution retrieval as in JLLMOR
@@ -963,29 +1022,27 @@ def Diet(data, t0, jlleps, runOrg, fstar=None, xstar=None):
         # solution retrieval as in JLLSDP: find xretr : A*xretr = b-A*xproj
         #   ie xretr = xproj + pinv(A)*(b-A*xproj)
         if dprjfrm2:
+            # |x|=n
             Axproj = A.dot(xproj)
-            (xpart,status,iterations,err1,err2,normA,condA,normxx) = scipy.sparse.linalg.lsmr(A,b-Axproj)
+            xpart = scipy.sparse.linalg.lsmr(A,b-Axproj)[0]
             xsretr = xproj + xpart
-        else:            
+            cc = c
+            xsproj = xproj
+        else:
+            # |x|=n+m
             Axsproj = A.dot(xsproj)
-            (xspart,status,iterations,err1,err2,normA,condA,normxx) = scipy.sparse.linalg.lsmr(A,b-Axsproj)
+            xspart = scipy.sparse.linalg.lsmr(A,b-Axsproj)[0]
             xsretr = xsproj + xspart
-        #if debug:
-        #    print("rp4lp:diet:lsmr:status={0:d}".format(status))
 
     # APM
-    c = np.zeros(n+m)
-    for i in cdict:
-        c[i-offset] = cdict[i]
-    if dprjfrm2:
-        c = c[0:n]
     if AltProjRetr:
-        xsretr,fretr,apstat,apitn,bnderr,feaserr = altProjRetrieval(xsretr, A, b, c, fproj, objfundir)
+        xsretr,fretr,apstat,apitn,bnderr,feaserr = altProjRetrieval(xsretr, A, b, cc, fproj, objfundir, xp=xsproj)
     xretr = xsretr[0:n]
         
     # obj fun @ xretr    
     fretr = np.dot(c[0:n], xretr)
     # CPU time
+    tretr = time.time() - tprjslv - tsample - torg - t0    
     tprj = time.time() - torg - t0
 
     # performance measures
@@ -1014,7 +1071,8 @@ def Diet(data, t0, jlleps, runOrg, fstar=None, xstar=None):
     print("rp4lp:out:xretr:ineqerr: avg={0:f} max={1:f}".format(avgineqinfeas, maxineqinfeas))
     print("rp4lp:out:xretr:Aberr: avg={0:f} max={1:f}".format(avgAbinfeas, maxAbinfeas))
     print("rp4lp:out:objfun: fstar={0:f} fproj={1:f} fretr={2:f}".format(fstar,fproj,fretr))
-    print("rp4lp:out:time: torg={0:.2f} tprj={1:.2f}".format(torg,tprj))
+    print("rp4lp:out:time:labels:torg,tprj,tsample,tprjslv,tretr")
+    print("rp4lp:out:time:{:.2f},{:.2f},{:.2f},{:.2f},{:.2f}".format(torg,tprj,tsample,tprjslv,tretr))
     formulation = (dimorg, dimprj, n, constrdens, nnzorg, nnzprj, thetaest)
     objective = (fstar, fproj, fretr)
     solution = (xstar, xproj, xretr, normxstar, normxproj, normxretr, dist_star_proj, dist_star_retr, dist_proj_retr, normdual, theta)
@@ -1053,25 +1111,22 @@ def QuantReg(data, t0, jlleps, runOrg, fstar=None, xstar=None):
     # work out density
     dD = Dnnz / (m*(p-1))
     constrdens = (dD*p + 2.0) / (p + 2*m)
-
+        
     if runOrg:
         # write original instance
         outDatQuantReg(m,p,bidx,tau,Ddict)
-    
         # solve original formulation
         quantreg = AMPL()
-        quantreg.setOption("solver", LPSolver)
-        ## prefer default setting on original problem
-        #solver_options = LPSolver + "_options"
-        #quantreg.setOption(solver_options, cplexoptions)
+        quantreg.setOption("solver", LPSolverOrg)
+        # for default settings, comment out the two following lines
+        solver_options = LPSolverOrg + "_options"
+        quantreg.setOption(solver_options, orgoptions)
         quantreg.read(quantregMod)
         quantreg.readData(quantregDat)
         quantreg.solve()
-
         # get optimal objective value
         objfun = quantreg.getObjective("error")
         fstar = objfun.value()
-        
         # get optimal solution
         varbeta = quantreg.getVariable("beta")
         betastar = np.zeros(p-1)
@@ -1089,7 +1144,6 @@ def QuantReg(data, t0, jlleps, runOrg, fstar=None, xstar=None):
         for i in range(m):
             umstar[i] = varum[i+1].value()
         xstar = np.concatenate((betastar, upstar, umstar))
-
         # dual solution norm and theta estimate
         cons = quantreg.getConstraint("quantile")
         dual = np.zeros(m)
@@ -1105,7 +1159,6 @@ def QuantReg(data, t0, jlleps, runOrg, fstar=None, xstar=None):
 
     thetaest = p + sum([abs(b[i]) for i in range(m)])
     theta = sum(betastar) + sum(upstar) + sum(umstar)
-
     torg = time.time() - t0
 
     # create matrix A for Ax=b constraints
@@ -1126,44 +1179,53 @@ def QuantReg(data, t0, jlleps, runOrg, fstar=None, xstar=None):
         print("rp4lp:quantreg: projecting from {0:d} to {1:d} rows".format(m,k))
     
     # generate projected data
-    TA = scipy.sparse.csr_matrix.dot(T,A) 
+    TA = scipy.sparse.csr_matrix.dot(T,A)
     Tb = T.dot(b)
 
-    # output projected instance
-    outProjDatQuantReg(m,p,tau,k,TA,Tb)
+    tsample = time.time() - torg - t0    
 
-    # solve projected formulation
+    ## solve projected formulation
     if debug:
         print("rp4lp:quantreg: solving projected instance")
-    quantregprj = AMPL()
-    quantregprj.setOption("solver", LPSolver)
-    solver_options = LPSolver + "_options"
-    quantregprj.setOption(solver_options, cplexoptions)
-    quantregprj.read(quantregProjMod)
-    quantregprj.readData(quantregProjDat)
-    quantregprj.solve()
+    ## output projected instance
+    #outProjDatQuantReg(m,p,tau,k,TA,Tb)
+    # quantregprj = AMPL()
+    # quantregprj.setOption("solver", LPSolverPrj)
+    # solver_options = LPSolverPrj + "_options"
+    # quantregprj.setOption(solver_options, prjoptions)
+    # quantregprj.read(quantregProjMod)
+    # quantregprj.readData(quantregProjDat)
+    # quantregprj.solve()
+    # # get optimal objective value
+    # objfunprj = quantregprj.getObjective("error")
+    # fproj = objfunprj.value()
+    # # get optimal solution
+    # varbetaproj = quantregprj.getVariable("beta")
+    # betaproj = np.zeros(p-1)
+    # h = 0
+    # for j in range(p):
+    #     if j+offset != bidx:
+    #         betaproj[h] = varbetaproj[j+offset].value()
+    #         h += 1
+    # varupproj = quantregprj.getVariable("up")
+    # upproj = np.zeros(m)
+    # for i in range(m):
+    #     upproj[i] = varupproj[i+1].value()
+    # varumproj = quantregprj.getVariable("um")
+    # umproj = np.zeros(m)
+    # for i in range(m):
+    #     umproj[i] = varumproj[i+1].value()
+    # xproj = np.concatenate((betaproj, upproj, umproj))
 
-    # get optimal objective value
-    objfunprj = quantregprj.getObjective("error")
-    fproj = objfunprj.value()
-
-    # get optimal solution
-    varbetaproj = quantregprj.getVariable("beta")
-    betaproj = np.zeros(p-1)
-    h = 0
-    for j in range(p):
-        if j+offset != bidx:
-            betaproj[h] = varbetaproj[j+offset].value()
-            h += 1
-    varupproj = quantregprj.getVariable("up")
-    upproj = np.zeros(m)
-    for i in range(m):
-        upproj[i] = varupproj[i+1].value()
-    varumproj = quantregprj.getVariable("um")
-    umproj = np.zeros(m)
-    for i in range(m):
-        umproj[i] = varumproj[i+1].value()
-    xproj = np.concatenate((betaproj, upproj, umproj))
+    c = np.concatenate([np.zeros(p-1), tau*np.ones(m), (1-tau)*np.ones(m)])
+    lb = np.concatenate([-myInf*np.ones(p-1), np.zeros(2*m)])
+    ub = myInf*np.ones(p-1+2*m)
+    LU = list(zip(lb,ub))
+    res = scipy.optimize.linprog(c, A_eq=TA, b_eq=Tb, bounds=LU, options={"disp":True})
+    xproj = res.get('x')
+    fproj = np.dot(c,xproj)
+    
+    tprjslv = time.time() - tsample - torg - t0    
     
     # solution retrieval as in JLLSDP: find xretr : A*xretr = b-A*xproj
     #   ie xretr = xproj + pinv(A)*(b-A*xproj)
@@ -1173,14 +1235,14 @@ def QuantReg(data, t0, jlleps, runOrg, fstar=None, xstar=None):
     #    print("rp4lp:quantreg:lsmr:status={0:d}".format(status))
     xretr = xproj + xpart
 
-    c = np.concatenate([np.zeros(p-1), tau*np.ones(m), (1-tau)*np.ones(m)])
     if AltProjRetr:
-        xretr,fretr,apstat,apitn,bnderr,feaserr = altProjRetrieval(xretr, A, b, c, fproj, objfundir)
+        xretr,fretr,apstat,apitn,bnderr,feaserr = altProjRetrieval(xretr, A, b, c, fproj, objfundir, xp=xproj)
     
     betaretr = xretr[0:p-1]
     upretr = xretr[p-1:p+m-1]
     umretr = xretr[p+m-1:p+2*m-1]
     fretr = tau*sum(upretr) + (1-tau)*sum(umretr)
+    tretr = time.time() - tprjslv - tsample - torg - t0    
     tprj = time.time() - torg - t0
 
     # performance measures
@@ -1211,7 +1273,8 @@ def QuantReg(data, t0, jlleps, runOrg, fstar=None, xstar=None):
     print("rp4lp:out:xretr:ineqerr: avg={0:f} max={1:f}".format(avgineqinfeas, maxineqinfeas))
     print("rp4lp:out:xretr:Aberr: avg={0:f} max={1:f}".format(avgAbinfeas, maxAbinfeas))
     print("rp4lp:out:objfun: fstar={0:f} fproj={1:f} fretr={2:f}".format(fstar,fproj,fretr))
-    print("rp4lp:out:time: torg={0:.2f} tprj={1:.2f}".format(torg,tprj))
+    print("rp4lp:out:time:labels:torg,tprj,tsample,tprjslv,tretr")
+    print("rp4lp:out:time:{:.2f},{:.2f},{:.2f},{:.2f},{:.2f}".format(torg,tprj,tsample,tprjslv,tretr))
     formulation = (dimorg, dimprj, p, constrdens, nnzorg, nnzprj, thetaest)
     objective = (fstar, fproj, fretr)
     solution = (xstar, xproj, xretr, normxstar, normxproj, normxretr, dist_star_proj, dist_star_retr, dist_proj_retr, normdual, theta)
@@ -1236,27 +1299,23 @@ def BasisPursuit(data, t0, jlleps, runOrg, fstar=None, xstar=None):
     if runOrg:    
         # output original instance
         outDatBasisPursuit(m,n,s,org,enc,Adict)
-
         # solve original formulation
         basispursuit = AMPL()
-        basispursuit.setOption("solver", LPSolver)
-        ## prefer default setting on original problem
-        #solver_options = LPSolver + "_options"
-        #basispursuit.setOption(solver_options, cplexoptions)
+        basispursuit.setOption("solver", LPSolverOrg)
+        # for default settings, comment out the two following lines
+        solver_options = LPSolverOrg + "_options"
+        basispursuit.setOption(solver_options, orgoptions)
         basispursuit.read(basispursuitMod)
         basispursuit.readData(basispursuitDat)
         basispursuit.solve()
-
         # get optimal objective value
         objfun = basispursuit.getObjective("ell1error")
         fstar = objfun.value()
-        
         # get optimal solution
         xvar = basispursuit.getVariable("x")
         xstar = np.zeros(n)
         for i in range(n):
             xstar[i] = xvar[i+offset].value()
-        
         # dual solution norm and theta estimate
         cons = basispursuit.getConstraint("decoding")
         dual = np.zeros(m)
@@ -1268,7 +1327,6 @@ def BasisPursuit(data, t0, jlleps, runOrg, fstar=None, xstar=None):
         
     thetaest = 2*n*n
     theta = sum(xstar)
-
     torg = time.time() - t0
     
     # matrices (A,b)
@@ -1293,53 +1351,65 @@ def BasisPursuit(data, t0, jlleps, runOrg, fstar=None, xstar=None):
     T = sparse_gaussian(k, m, jlldens) / math.sqrt(k*jlldens)
     if debug:
         print("rp4lp:basispursuit: projecting from {0:d} to {1:d} rows".format(m,k))
-
+ 
     # generate projected data
     TA = scipy.sparse.csr_matrix.dot(T,A) 
     Tb = T.dot(b)
-
-    # output projected instance
-    outProjDatBasisPursuit(k,n,s,org, Tb,TA)
-
-    # solve projected formulation
+    
+    tsample = time.time() - torg - t0           
+        
+    ## solve projected formulation
     if debug:
         print("rp4lp:basispursuit: solving projected instance")
-    basispursuitprj = AMPL()
-    basispursuitprj.setOption("solver", LPSolver)
-    solver_options = LPSolver + "_options"
-    basispursuitprj.setOption(solver_options, cplexoptions)
-    basispursuitprj.read(basispursuitProjMod)
-    basispursuitprj.readData(basispursuitProjDat)
-    basispursuitprj.solve()
-    
-    # get optimal objective value
-    objfunprj = basispursuitprj.getObjective("ell1error")
-    fproj = objfunprj.value()
+    # # output projected instance
+    # outProjDatBasisPursuit(k,n,s,org, Tb,TA)
+    # basispursuitprj = AMPL()
+    # basispursuitprj.setOption("solver", LPSolverPrj)
+    # solver_options = LPSolverPrj + "_options"
+    # basispursuitprj.setOption(solver_options, prjoptions)
+    # basispursuitprj.read(basispursuitProjMod)
+    # basispursuitprj.readData(basispursuitProjDat)
+    # basispursuitprj.solve()    
+    # # get optimal objective value
+    # objfunprj = basispursuitprj.getObjective("ell1error")
+    # fproj = objfunprj.value()
+    # # get optimal solution
+    # xvarprj = basispursuitprj.getVariable("x")
+    # xproj = np.zeros(n)
+    # for j in range(n):
+    #     xproj[j] = xvarprj[j+1].value()
+    # svvarprj = basispursuitprj.getVariable("sv")
+    # svproj = np.zeros(n)
+    # for j in range(n):
+    #     svproj[j] = svvarprj[j+1].value()
 
-    # get optimal solution
-    xvarprj = basispursuitprj.getVariable("x")
-    xproj = np.zeros(n)
-    for j in range(n):
-        xproj[j] = xvarprj[j+1].value()
-    svvarprj = basispursuitprj.getVariable("sv")
-    svproj = np.zeros(n)
-    for j in range(n):
-        svproj[j] = svvarprj[j+1].value()
+    c = np.concatenate([np.zeros(n), np.ones(n)])
+    Aup = np.hstack([np.identity(n), -1.0*np.identity(n)])
+    Adn = np.hstack([-1.0*np.identity(n), -1.0*np.identity(n)])
+    Aineq = np.vstack([Aup, Adn])
+    bineq = np.zeros(2*n)
+    TA = np.hstack([TA, np.zeros((k,n))])
+    res = scipy.optimize.linprog(c, A_eq=TA, b_eq=Tb, A_ub=Aineq, b_ub=bineq, options={"disp":True})
+    xsproj = res.get('x') # [0:n]:signal; [n:2*n]:absvalreform
+    fproj = np.dot(c,xsproj)
+    xproj = xsproj[0:n]
+    
+    tprjslv = time.time() - tsample - torg - t0    
         
     # solution retrieval as in JLLSDP: find xretr : A*xretr = b-A*xproj
     #   ie xretr = xproj + pinv(A)*(b-A*xproj)
     Axproj = A.dot(xproj)
     bmAxproj = b - Axproj
-    #(xpart,status,iterations,err1,err2,normA,condA,normxx) = scipy.sparse.linalg.lsmr(A,b-Axproj)
     (xpart, rowerror, rank, s) = np.linalg.lstsq(A, bmAxproj, rcond=None)
     error = sum(rowerror)
     if debug:
         print("rp4lp:basispursuit:lstsq: error={0:f}".format(error))    
     xretr = xproj + xpart
 
-    # no bound constraints on x in basis pursuit, no need for altProjRetrieval
+    # no bound constrs on x in basis pursuit => no need for altProjRetrieval
     
     fretr = sum([abs(xretr[j]) for j in range(n)])
+    tretr = time.time() - tprjslv - tsample - torg - t0    
     tprj = time.time() - torg - t0    
         
     # performance measures
@@ -1367,7 +1437,8 @@ def BasisPursuit(data, t0, jlleps, runOrg, fstar=None, xstar=None):
     print("rp4lp:out:xretr:ineqerr: avg={0:f} max={1:f}".format(avgineqinfeas, maxineqinfeas))
     print("rp4lp:out:xretr:Aberr: avg={0:f} max={1:f}".format(avgAbinfeas, maxAbinfeas))
     print("rp4lp:out:objfun: fstar={0:f} fproj={1:f} fretr={2:f}".format(fstar,fproj,fretr))
-    print("rp4lp:out:time: torg={0:.2f} tprj={1:.2f}".format(torg,tprj))
+    print("rp4lp:out:time:labels:torg,tprj,tsample,tprjslv,tretr")
+    print("rp4lp:out:time:{:.2f},{:.2f},{:.2f},{:.2f},{:.2f}".format(torg,tprj,tsample,tprjslv,tretr))
     formulation = (dimorg, dimprj, n, constrdens, nnzorg, nnzprj, thetaest)
     objective = (fstar, fproj, fretr)
     solution = (xstar, xproj, xretr, normxstar, normxproj, normxretr, dist_star_proj, dist_star_retr, dist_proj_retr, normdual, theta)
@@ -1395,10 +1466,10 @@ def Uniform(data, t0, jlleps, runOrg, fstar=None, xstar=None):
 
         # solve original formulation
         uniform = AMPL()
-        uniform.setOption("solver", LPSolver)
-        ## prefer default setting on original problem
-        #solver_options = LPSolver + "_options"
-        #uniform.setOption(solver_options, cplexoptions)
+        uniform.setOption("solver", LPSolverOrg)
+        # for default settings, comment out the two following lines
+        solver_options = LPSolverOrg + "_options"
+        uniform.setOption(solver_options, orgoptions)
         uniform.read(uniformMod)
         uniform.readData(uniformDat)
         uniform.solve()
@@ -1458,6 +1529,8 @@ def Uniform(data, t0, jlleps, runOrg, fstar=None, xstar=None):
     TA = scipy.sparse.csr_matrix.dot(T,A) 
     Tb = T.dot(b)
 
+    tsample = time.time() - torg - t0           
+    
     # output projected instance
     outProjDatUniform(k,n,cdict,TA,Tb)
 
@@ -1465,9 +1538,9 @@ def Uniform(data, t0, jlleps, runOrg, fstar=None, xstar=None):
     if debug:
         print("rp4lp:uniform: solving projected instance")
     uniformprj = AMPL()
-    uniformprj.setOption("solver", LPSolver)
-    solver_options = LPSolver + "_options"
-    uniformprj.setOption(solver_options, cplexoptions)
+    uniformprj.setOption("solver", LPSolverPrj)
+    solver_options = LPSolverPrj + "_options"
+    uniformprj.setOption(solver_options, prjoptions)
     uniformprj.read(uniformProjMod)
     uniformprj.readData(uniformProjDat)
     uniformprj.solve()
@@ -1482,6 +1555,8 @@ def Uniform(data, t0, jlleps, runOrg, fstar=None, xstar=None):
     for j in range(n):
         xproj[j] = xvarprj[j+1].value()
 
+    tprjslv = time.time() - tsample - torg - t0    
+        
     # solution retrieval as in JLLSDP: find xretr : A*xretr = b-A*xproj
     #   ie xretr = xproj + pinv(A)*(b-A*xproj)
     Axproj = A.dot(xproj)
@@ -1489,8 +1564,9 @@ def Uniform(data, t0, jlleps, runOrg, fstar=None, xstar=None):
     xretr = xproj + xpart
 
     if AltProjRetr:
-        xretr,fretr,apstat,apitn,bnderr,feaserr = altProjRetrieval(xretr,A,b,c,fproj,objfundir)
+        xretr,fretr,apstat,apitn,bnderr,feaserr = altProjRetrieval(xretr,A,b,c,fproj,objfundir, xp=xproj)
     fretr = np.dot(c,xretr)
+    tretr = time.time() - tprjslv - tsample - torg - t0    
     tprj = time.time() - torg - t0
     
     # performance measures
@@ -1519,7 +1595,8 @@ def Uniform(data, t0, jlleps, runOrg, fstar=None, xstar=None):
     print("rp4lp:out:xretr:ineqerr: avg={0:f} max={1:f}".format(avgineqinfeas, maxineqinfeas))
     print("rp4lp:out:xretr:Aberr: avg={0:f} max={1:f}".format(avgAbinfeas, maxAbinfeas))
     print("rp4lp:out:objfun: fstar={0:f} fproj={1:f} fretr={2:f}".format(fstar,fproj,fretr))
-    print("rp4lp:out:time: torg={0:.2f} tprj={1:.2f}".format(torg,tprj))
+    print("rp4lp:out:time:labels:torg,tprj,tsample,tprjslv,tretr")
+    print("rp4lp:out:time:{:.2f},{:.2f},{:.2f},{:.2f},{:.2f}".format(torg,tprj,tsample,tprjslv,tretr))
     formulation = (dimorg, dimprj, n, constrdens, nnzorg, nnzprj, thetaest)
     objective = (fstar, fproj, fretr)
     solution = (xstar, xproj, xretr, normxstar, normxproj, normxretr, dist_star_proj, dist_star_retr, dist_proj_retr, normdual, theta)
@@ -1559,12 +1636,104 @@ def poorManDualBound(A,b,c,tol):
     # compute dual bound yb
     dualbound = y.dot(b)
     return dualbound
-    
 
-# alternating projection method for better retrieved solutions
-#   phase 1: aim at full feasibility, compute fretr
-#   phase 2: aim at improving optimality, bisection on fretr and fproj
-def altProjRetrieval(x,A,b,c,fproj,objfundir,low=None,upp=None,tol=AltProjTol,maxitn=AltProjMaxItn):
+# adapted to scipy.sparse
+#   from https://mail.python.org/pipermail/scipy-user/2009-May/021308.html
+#   doesn't converge
+def project_subspace(z,A,b, eps=np.finfo(float).eps):
+    """ Project a vector onto the subspace defined by "dot(A,x) = b".
+    """
+    m, n = A.shape
+    #u, s, vh = np.linalg.svd(A)
+    u, s, vh = scipy.sparse.linalg.svds(A, k=min(m,n)-1)
+    # the three following magic lines from
+    # Roger Hung's answer @
+    #https://stackoverflow.com/questions/50884533/numpy-svd-vs-scipy-sparse-svds
+    u = -u[:,::-1]
+    vh = -vh[::-1,:]
+    s = s[::-1]
+    # Find the first singular value to drop below the cutoff.
+    bad = (s < s[0] * eps)
+    i = bad.searchsorted(1)
+    # if i < m-1:
+    #     rcond = s[i]
+    # else:
+    #     rcond = -1
+    # sol = np.linalg.lstsq(A, b, rcond=rcond)
+    sol = scipy.sparse.linalg.lsmr(A, b)
+    x0 = sol[0]
+    null_space = vh[i:]
+    z_proj = x0 + (null_space * np.dot(null_space,z-x0)[:,np.newaxis]).sum(axis=0)
+    return z_proj
+
+# project on a subspace with Alg 10.31 in [Combettes & Pesquet 2011]
+#   doesn't converge
+def projectOnSubspace(xstart,A,b,tol=AltProjTol,maxitn=AltProjMaxItn):
+    m, n = A.shape
+    x = xstart
+    z = {i:np.copy(x) for i in range(m)}
+    p = {i:None for i in range(m)}
+    A = np.array(A.todense())
+    errstart = np.linalg.norm(A@x-b)
+    for itn in range(maxitn):
+        for i in range(m):
+            #Ai = np.array(A.getrow(i).todense())
+            #Ai = np.squeeze(Ai) # squeeze won't work in-place
+            Ai = np.squeeze(A[i])
+            p[i] = z[i] - (np.dot(Ai,z[i])-b[i]) * (Ai / np.linalg.norm(Ai))
+        x = np.sum([p[i] for i in range(m)], axis=0) / m
+        for i in range(m):
+            z[i] = x + z[i] - p[i]
+    errend = np.linalg.norm(A@x-b)
+    print("rp4lp:projectOnSubspace: err0={} err1={}".format(errstart,errend))
+    return x
+
+# bisection search:
+#  optimize in direction od the linear form <c,x> on segment [x0,x1]
+#  using feasibility oracle Ax=b
+def bisectionSearch(xL,xU,A,b,c,od,tol=AltProjTol):
+    fL = np.dot(c,xL)
+    fU = np.dot(c,xU)
+    # make sure the optimization direction goes from xL to xU
+    if (fL < fU and od < 0) or (fL > fU and od > 0):
+        # swap 0 and 1
+        ftmp = fL
+        fL = fU
+        fU = ftmp
+        ftmp = fL
+        fL = fU
+        fU = ftmp
+    # run bisection
+    itn = 0
+    xstar = np.copy(xL)
+    fstar = fL
+    while fU - fL > tol:
+        x = (xL + xU) / 2
+        fx = np.dot(c,x)
+        if np.linalg.norm(A@x-b) < tol:
+            # x is feasible, set xL=x
+            xL = x
+            fL = fx
+            if od*fx > od*fstar:
+                # local opt
+                fstar = fx
+                xstar = x
+        else:
+            # x is infeasible, set xU=x
+            xU = x
+            fU = fx
+        print("rp4lp:bisection: itn={} f={:.3f} fL={:.3f} fU={:.3f}".format(itn, fx, fL, fU))
+        itn += 1
+    return xstar
+
+def projObjFun(x,x0):
+    return np.linalg.norm(np.subtract(x,x0))
+
+# alternating projection method for better retrieved solutions (dykstra's APM)
+#   called after standard pseudoinverse retrieval, so xstart feas wrt Ax=b
+#   fproj,objfundir are not used in this implementation
+#     (but see altProjRetrieval-2211.py in this dir)
+def altProjRetrieval(xstart,A,b,c,fproj,objfundir,low=None,upp=None,tol=AltProjTol,maxitn=AltProjMaxItn, xp=None):
     aprcpu0 = time.time()
     m = A.shape[0]
     n = A.shape[1]
@@ -1575,134 +1744,250 @@ def altProjRetrieval(x,A,b,c,fproj,objfundir,low=None,upp=None,tol=AltProjTol,ma
         low = np.zeros(n)
     if upp is None:
         upp = myInf*np.ones(n)
-    forg = np.dot(c,x)
-
-    ### double alternating projections method (1: feas, 2: opt)
-    xfeas = np.copy(x)
+    # original objective cost with xstart
+    forg = np.dot(c,xstart)
+    # don't change xstart during APM
+    x = np.copy(xstart) 
+    xprev = np.copy(x)
     status = "1:maxitn"
     iterations = maxitn
 
-    ## phase 1: feasibility
-    for itn in range(maxitn):
-        xold = np.copy(xfeas)
-        # verify bound error wrt low <= x <= upp
-        bnderr = sum([abs(min(xfeas[j]-low[j],0)) for j in range(n)])
-        bnderr += sum([abs(min(upp[j]-xfeas[j],0)) for j in range(n)])
-        if bnderr > tol:
-            # bound error, project on low <= x <= upp
-            for j in range(n):
-                if xfeas[j] < low[j]:
-                    xfeas[j] = low[j]
-                elif xfeas[j] > upp[j]:
-                    xfeas[j] = upp[j]
-        else: 
-            # no bound error: exit
-            status = "1:nobnderr"
-            iterations = itn + 1
-            break
-        # verify feasibility error wrt Ax=b
-        feaserr = np.linalg.norm(A.dot(xfeas) - b)
-        if feaserr > tol:
-            # feasibility error, project on Ax=b
-            if spA:
-                # sparse least squares
-                (xAb,stat,itns,e1,e2,nA,cA,nx) = scipy.sparse.linalg.lsmr(A, b - A.dot(xfeas))
-            else:
-                # dense least squares
-                xAb,res,rk,sv = np.linalg.lstsq(A, b-A.dot(xfeas), rcond=None)
-            # update current solution
-            xfeas = xfeas + xAb
-            ffeas = np.dot(c,xfeas)
-        # new point too close to old
-        progressSol = np.linalg.norm(xfeas - xold)
-        if progressSol <= tol: #mySmall:
-            status = "1:noprogress"
-            iterations = itn + 1
-            break
-        # check error sum
-        if bnderr + feaserr <= 2*tol:
-            status = "1:smallerr"
-            iterations = itn + 1
-            break        
+    t0 = time.time()
+    
+    ## compute pseudoinverse of A once and for all
+    #pinvA = scipy.linalg.pinv(A.todense())
+    xcheck = scipy.sparse.linalg.lsmr(A,b)[0]
 
-    if AltProjOpt:
-        ## phase 2: optimality:
-        ##   bisection on segment [xfeas, proj(xfeas,[A;c]x=[b;fproj])]
-        # get a workable objective bound
-        #fbnd = poorManDualBound(A,b,c,tol)
-        fbnd = fproj 
-        if debug:
-            print("rp4lp:apretr:opt: ofdir={:f} ffeas={:f} fbnd={:f}".format(objfundir, ffeas, fbnd))
-        # append row cx=fproj to (A,b), get (Ac,bc)
-        if spA:
-            Ac = scipy.sparse.vstack([A,c])
-        else:
-            Ac = np.vstack([A,c])
-        bc = np.append(b,[0])
-        # project xfeas on [A;c]x=[b;objtarget], obtain (infeas) xbnd
-        if spA:
-            # sparse least squares
-            (xAb,lstsq_status,iterations,err1,err2,normA,condA,normxx) = scipy.sparse.linalg.lsmr(Ac,bc-Ac.dot(xfeas))
-        else:
-            # dense least squares
-            xAb,res,rk,sv = np.linalg.lstsq(Ac,bc-Ac.dot(xfeas))
-        xbnd = xfeas + xAb
-        # search direction
-        #   note: xdir in null(A) since A(xbnd-xfeas)=Axbnd-Axfeas=b-b=0
-        xdir = xbnd - xfeas 
-        # candidate optimum solution
-        xopt = np.copy(xfeas)
-        # go
+    ## go!
+    if AltProjMethod == "Dykstra":
+        # Dykstra's APM - since xstart feasible in Ax=b, 1st proj on [low,upp]
+        p = np.zeros(n)
+        q = np.zeros(n)
+        y = np.zeros(n)
         for itn in range(maxitn):
-            xold = np.copy(xopt)
-            fold = ffeas
-            # try new optimum (note: Axopt=b since xdir in null(A))
-            xopt = xfeas + 0.5*xdir
-            fopt = np.dot(c,xopt)
+            for j in range(n):
+                xprev[j] = x[j]
+            
             # verify bound error wrt low <= x <= upp
-            bnderr = sum([abs(min(xopt[j]-low[j],0)) for j in range(n)])
-            bnderr += sum([abs(min(upp[j]-xopt[j],0)) for j in range(n)])
+            bnderr = sum([abs(min(x[j] - low[j], 0)) for j in range(n)])
+            bnderr+= sum([abs(min(upp[j] - x[j], 0)) for j in range(n)])
             if bnderr > tol:
-                # xopt infeasible
-                xbnd = xopt
-                fbnd = fopt
-                if debug:
-                    print("rp4lp:apretr:opt: infeas, itn={:d} bnderr={:f} fbnd={:f}".format(itn,bnderr,fbnd))
-            else:
-                # xopt feasible
-                xfeas = xopt
-                ffeas = fopt
-                if debug:
-                    print("rp4lp:apretr:opt: newfeas, fold={:f} ffeas={:f}".format(fold, ffeas))
-            # verify bound closeness 
-            if (objfundir>0 and fbnd-ffeas<=tol) or (objfundir<0 and ffeas-fbnd<=tol):
-                # optimum found
-                status += " 2:opt"
+                # bound error, project on low <= x+p <= upp, call proj y
+                for j in range(n):
+                    if x[j]+p[j] < low[j]:
+                        y[j] = low[j]
+                    elif x[j]+p[j] > upp[j]:
+                        y[j] = upp[j]
+                    else:
+                        y[j] = x[j]+p[j]
+            else: 
+                # no bound error: exit
+                status = "1:nobnderr"
+                iterations = itn + 1
+                x = xprev
+                break
+            # Dykstra: update p
+            p = x+p - y
+            # verify feasibility error wrt Ay=b (not y+q)
+            feaserr = np.linalg.norm(A.dot(y)-b) 
+            if feaserr > tol:
+                # feasibility error, project on A(y+q)=b
+                rhs = b + A.dot(y+q) 
+                if spA:
+                    ### sparse
+                    ## method 1: pseudoinverse (slow!)
+                    #x = (y+q) + pinvA@(b-A@(y+q))
+                    ## method 2: call an optimization solver (even slower!)
+                    #res = scipy.optimize.minimize(projObjFun,y+q,args=(y+q),bounds=None, tol=tol, constraints=(scipy.optimize.LinearConstraint(A,b,b)))
+                    ## method 3: least squares - doesn't solve what we want
+                    #x = scipy.sparse.linalg.lsmr(A,rhs,x0=y+q)[0]
+                    ## method 4: project_subspace (taken from the internet)
+                    #x = project_subspace(y+q, A, b)
+                    ## method 5: projectOnSubspace (sub-APM)
+                    #x = projectOnSubspace(y+q, A, b)
+                    ## method 6: line search between xcheck and xbar
+                    #xcheck = scipy.sparse.linalg.lsmr(A,b)[0] #COMPUTED ONCE
+                    xhat = scipy.sparse.linalg.lsmr(A,rhs)[0]
+                    xbar = xhat - (y+q)
+                    alph = xcheck - xbar
+                    bet = y+q - xbar
+                    x=(np.dot(alph,bet)/(np.linalg.norm(alph)**2))*alph + xbar
+                    ## method 7: lsqr
+                    #x = scipy.sparse.linalg.lsqr(A,rhs,x0=y+q)[0]
+                else:
+                    ### dense
+                    ## pseudoinverse
+                    #x = (y+q) + pinvA@(b-A@(y+q))
+                    # method 6:
+                    x = np.linalg.lstsq(A,rhs, rcond=None)[0]
+                    xcheck = scipy.sparse.linalg.lsmr(A,b)[0]
+                    xhat = scipy.sparse.linalg.lsmr(A,rhs)[0]
+                    xbar = xhat - (y+q)
+                    alph = xcheck - xbar
+                    bet = y+q - xbar
+                    x=(np.dot(alph,bet)/(np.linalg.norm(alph)**2))*alph + xbar
+                # update current solution
+                # Dykstra: update q
+                q = y+q - x
+            ffeas = np.dot(c,x)
+            # new point too close to old
+            progressSol = np.linalg.norm(x - xprev)
+            print("rp4lp:apretr(Dy): itn={:d} rnge={:.2f} eqe={:.2f} prgr={:.2f} obj={:.2f}".format(itn, bnderr, feaserr, progressSol, ffeas))
+            #print("   DykstraVars:||x||={:.2f} ||y||={:.2f} ||p||={:.2f} ||q||={:.2f}".format(np.linalg.norm(x), np.linalg.norm(y), np.linalg.norm(p), np.linalg.norm(q)))
+            if progressSol <= tol: #mySmall:
+                status = "1:noprogress"
                 iterations = itn + 1
                 break
-    else: # AltProjOpt is false
-        xopt = xfeas
+            # check error sum
+            if bnderr + feaserr <= 2*tol:
+                status = "1:smallerr"
+                iterations = itn + 1
+                break   
+
+    elif AltProjMethod == "AARM":
+        # Artacho & Campoy's averaged APM (AARM)
+        alpha = 0.9
+        beta = 0.9
+        xA = np.copy(x)
+        xB = np.copy(x)
+        for itn in range(maxitn):
+            for j in range(n):
+                xprev[j] = x[j]
+            # bound error, project x on low <= x <= upp
+            for j in range(n):
+                if x[j] < low[j]:
+                    xA[j] = low[j]
+                elif x[j] > upp[j]:
+                    xA[j] = upp[j]
+            xAI = 2*beta*xA - x            
+            # feasibility error, project xA on Ax=b
+            rhs = b + A.dot(xA) 
+            if spA: # sparse
+                ## method 6: line search between xcheck and xbar
+                xcheck = scipy.sparse.linalg.lsmr(A,b)[0]
+                xhat = scipy.sparse.linalg.lsmr(A,rhs)[0]
+            else: # dense
+                xcheck = np.linalg.lstsq(A,b,rcond=None)[0]
+                xhat = np.linalg.lstsq(A,rhs,rcond=None)[0]
+            xbar = xhat - xA
+            alph = xcheck - xbar
+            bet =  xA - xbar
+            xB = (np.dot(alph,bet)/(np.linalg.norm(alph)**2))*alph + xbar
+            xBI = 2*beta*xB - x
+            # AARM operator
+            x = (1-alpha)*x + alpha*xBI
+            # check errors
+            bnderr = sum([abs(min(x[j] - low[j], 0)) for j in range(n)])
+            bnderr+= sum([abs(min(upp[j] - x[j], 0)) for j in range(n)])
+            feaserr = np.linalg.norm(A.dot(x)-b) 
+            progressSol = np.linalg.norm(x - xprev)
+            ffeas = np.dot(c,x)
+            print("rp4lp:apretr(AARM): itn={:d} rnge={:.2f} eqe={:.2f} prgr={:.2f} obj={:.2f}".format(itn, bnderr, feaserr, progressSol, ffeas))
+            if progressSol <= tol: #mySmall:
+                status = "1:noprogress"
+                iterations = itn + 1
+                break
+            # check error sum
+            if bnderr + feaserr <= 2*tol:
+                status = "1:smallerr"
+                iterations = itn + 1
+                break   
+            
+    elif AltProjMethod == "vonNeumann": 
+        # von Neumann's APM - since xstart feasible in Ax=b, 1st pr on [low,upp]
+        for itn in range(maxitn):
+            for j in range(n):
+                xprev[j] = x[j]
+            # verify bound error wrt low <= x <= upp
+            bnderr = sum([abs(min(x[j] - low[j], 0)) for j in range(n)])
+            bnderr += sum([abs(min(upp[j] - x[j], 0)) for j in range(n)])
+            if bnderr > tol:
+                # bound error, project on low <= x <= upp
+                for j in range(n):
+                    if x[j] < low[j]:
+                        x[j] = low[j]
+                    elif x[j] > upp[j]:
+                        x[j] = upp[j]
+            else: 
+                # no bound error: exit
+                status = "1:nobnderr"
+                iterations = itn + 1
+                break
+            # verify feasibility error wrt Ax=b
+            feaserr = np.linalg.norm(A.dot(x)-b)
+            if feaserr > tol:
+                # feasibility error, project on Ax=b
+                rhs = b + A.dot(x)
+                if spA:
+                    # sparse least squares
+                    (x,stat,itns,e1,e2,nA,cA,nx) = scipy.sparse.linalg.lsmr(A,rhs)
+                else:
+                    # dense least squares
+                    x,res,rk,sv = np.linalg.lstsq(A, rhs, rcond=None)
+            ffeas = np.dot(c,x)
+            # new point too close to old
+            progressSol = np.linalg.norm(x - xprev)
+            print("rp4lp:apretr(vN): itn={:d} rng={:.2f} eq={:.2f} prg={:.2f} obj={:.2f}".format(itn, bnderr, feaserr, progressSol, ffeas))
+            if progressSol <= tol: #mySmall:
+                status = "1:noprogress"
+                iterations = itn + 1
+                break
+            # check error sum
+            if bnderr + feaserr <= 2*tol:
+                status = "1:smallerr"
+                iterations = itn + 1
+                break
+
+    elif AltProjMethod == "locslv":
+        # a few iterations of a local solver
+        LUbnd = [t for t in zip(low,upp)]
+        status = "locsolve highs@linprog maxiter={}".format(maxitn)
+        #res = scipy.optimize.linprog(-c, A_eq=A, b_eq=b, bounds=LUbnd, method='highs', x0=xstart, options={"disp":True})
+        res = scipy.optimize.linprog(-c, A_eq=A, b_eq=b, bounds=LUbnd, method='highs-ipm', x0=xstart, options={"maxiter":maxitn, 'ipm_optimality_tolerance':tol, 'dual_feasibility_tolerance':tol, 'primal_feasibility_tolerance':tol, "disp":True})
+        #status = "locsolve trust-constr@minimize maxiter={}".format(maxitn)
+        #res = scipy.optimize.minimize(projObjFun, xstart, args=(xstart), bounds=LUbnd, constraints=(scipy.optimize.LinearConstraint(A,b,b)), tol=tol, options={"maxiter":maxitn, "gtol":tol, "disp":True})
+        #res = scipy.optimize.minimize(projObjFun, xstart, args=(xstart), method="trust-constr", bounds=LUbnd, constraints=(scipy.optimize.LinearConstraint(A,b,b)), tol=tol, options={"maxiter":maxitn, "gtol":tol, "disp":True})
+        x = res.get('x')
+        bnderr = sum([abs(min(x[j] - low[j], 0)) for j in range(n)])
+        bnderr += sum([abs(min(upp[j] - x[j], 0)) for j in range(n)])
+        feaserr = np.linalg.norm(A.dot(x)-b)
+        progressSol = np.linalg.norm(x - xprev)
+        ffeas = np.dot(c,x)
+            
+    else:
+        # APM method not found
+        print("rp4lp:apretr: method {} not found".format(AltProjMethod))
+        x = xstart
+
+    tapm = time.time() - t0
         
+    # bisection search in objfundir on segment [x,xproj]
+    if xp is not None and AltProjMethod != "locslv":
+        print("rp4lp:bisection: using segment [xapm,xproj]")
+        #bnderr = sum([abs(min(x[j] - low[j],0)) for j in range(n)])
+        #bnderr += sum([abs(min(upp[j] - x[j],0)) for j in range(n)])
+        #feaserr = np.linalg.norm(A.dot(x) - b)
+        print("rp4lp:bisection: xapm has bnderr={:f} feaserr={:f} obj={:f}".format(bnderr, feaserr, ffeas))
+        x = bisectionSearch(x,xp,A,b,c,objfundir)
+
+    tbis = time.time() - tapm - t0
+            
     # compute bnderr and feaserr for new solution and distance from old
-    bnderr = sum([abs(min(xopt[j] - low[j],0)) for j in range(n)])
-    bnderr += sum([abs(min(upp[j] - xopt[j],0)) for j in range(n)])
-    feaserr = np.linalg.norm(A.dot(xopt) - b)
-    fopt = np.dot(c,xopt)
+    bnderr = sum([abs(min(x[j] - low[j],0)) for j in range(n)])
+    bnderr += sum([abs(min(upp[j] - x[j],0)) for j in range(n)])
+    feaserr = np.linalg.norm(A.dot(x) - b)
+    fopt = np.dot(c,x)
     aprcpu = time.time() - aprcpu0
     if debug:
-        bnderrx = sum([abs(min(x[j]-low[j],0)) for j in range(n)])
-        bnderrx += sum([abs(min(upp[j]-x[j],0)) for j in range(n)])
-        feaserrx = np.linalg.norm(A.dot(x) - b)
-        print("rp4lp:apretr: status={:s} itn={:d}".format(status,iterations),end='')
-        if AltProjOpt:
-            print(" feas+opt")
-        else:
-            print(" feas_only")
+        bnderrx = sum([abs(min(xstart[j]-low[j],0)) for j in range(n)])
+        bnderrx += sum([abs(min(upp[j]-xstart[j],0)) for j in range(n)])
+        feaserrx = np.linalg.norm(A.dot(xstart) - b)
+        print("rp4lp:apretr: status={:s} itn={:d}".format(status,iterations))
         print("rp4lp:apretr: forg={:f} fnew={:f}".format(forg,fopt))
         print("rp4lp:apretr: bnderrold={:f} bnderrnew={:f}".format(bnderrx,bnderr))
         print("rp4lp:apretr: feaserrold={:f} feaserrnew={:f}".format(feaserrx,feaserr))
-        print("rp4lp:apretr: cpu={:.2f}".format(aprcpu))
-    return xopt, fopt, status, iterations, bnderr, feaserr
+        print("rp4lp:apretr:cpu: tapm={:.2f} tbis={:.2f} ttot={:.2f}".format(tapm, tbis, aprcpu))
+    return x, fopt, status, iterations, bnderr, feaserr
         
 
 ############################## main ##############################
@@ -1716,7 +2001,8 @@ datFiles = sys.argv[1:]
 print("rp4lp:conf: jlleps tested:", jllEPS)
 print("rp4lp:conf: {0:d} runs for each (instance,jlleps)".format(runsPerEps))
 print("rp4lp:conf: RPDensFactor={:f} universalConstant={:f}".format(RPDensFactor, universalConstant))
-print("rp4lp:conf: solver={:s} {:s}".format(LPSolver, cplexoptions))
+print("rp4lp:conf: org solver={:s} {:s}".format(LPSolverOrg, orgoptions))
+print("rp4lp:conf: prj solver={:s} {:s}".format(LPSolverPrj, prjoptions))
 print("rp4lp:conf: can do", instanceTypes)
 print("rp4lp:conf:maxflow: sparseFlag={}".format(sparseFlag))
 print("rp4lp:conf:diet: retrJLLMOR={} slackCoeff={}".format(retrJLLMOR, slackCoeff))
