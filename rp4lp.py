@@ -39,9 +39,10 @@ myInf = 1e30
 ## perform RP experiments
 #jllEPS = sorted([0.15, 0.2, 0.25, 0.3, 0.35, 0.4]) #SEA22 subm
 #jllEPS = sorted([0.1, 0.125, 0.15, 0.175]) #meaningful
-#jllEPS = sorted([0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]) #JEA
-#jllEPS = sorted([0.05, 0.1, 0.15, 0.2]) # JEA test2 for quantreg
-#runsPerEps = 5   # how many times we solve instance for each epsilon
+jllEPS = sorted([0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]) #JEA
+#jllEPS = sorted([0.05, 0.1, 0.15, 0.2]) # JEA test2 for quantreg2
+#jllEPS = sorted([0.1, 0.15]) # JEA test2 for basispursuit2
+runsPerEps = 5   # how many times we solve instance for each epsilon
 ## or just run once
 jllEPS = [0.5]
 runsPerEps = 1
@@ -60,13 +61,13 @@ offset = 1
 LPSolverOrg = "cplex"
 cplexoptions = "autopt display=1"
 orgoptions = cplexoptions
-#LPSolverPrj = "highs"
-LPSolverPrj = "cplex"
-## barrier solver for projected problem
+LPSolverPrj = "highs"
+#LPSolverPrj = "cplex"
+## barrier solver for projected problem if using the AMPL interface
 prjcplexoptions = "baropt crossover=0 display=1 bardisplay=1"
 highsoptions = "alg:method=ipm lim:ipmiterationlimit=10 tech:outlev=1"
-#prjoptions = highsoptions
-prjoptions = prjcplexoptions
+prjoptions = highsoptions
+#prjoptions = prjcplexoptions
 
 # sparse or dense algebra (option only applicable to maxflow)
 sparseFlag = False
@@ -105,7 +106,7 @@ uniformMod = "uniform.mod"
 maxflowProjMod = "maxflowprj.mod"
 #dietProjMod = "dietprj.mod"  # in SEA22 paper
 dietProjMod = "dietprj1.mod"  # n.1 in JEA paper
-dietProjMod = "dietprj2.mod"  # n.2 in JEA paper
+#dietProjMod = "dietprj2.mod"  # n.2 in JEA paper
 quantregProjMod = "quantregprj.mod"
 basispursuitProjMod = "basispursuit.mod"
 uniformProjMod = "uniform.mod"
@@ -553,7 +554,7 @@ def outProjDatQuantReg(m,p,tau,k,TA,Tb):
         print(";", file=out)
     return
 
-def outProjDatBasisPursuit(k,n,s,org,Tb,TA):
+def outProjDatBasisPursuit(k,n,s,org,TA,Tb):
     with open(basispursuitProjDat, 'w') as out:
         print("# rp4lp: original basis pursuit formulation instance", file=out)
         print("param m := {0:d};".format(k), file=out)
@@ -760,7 +761,7 @@ def maxFlow(data, t0, jlleps, runOrg, fstar=None, xstar=None):
     l1 = np.zeros(xlen)
     u1 = np.array([u[col2arc[i]] for i in range(xlen)]) # UB on capacities
     LUbnd = list(zip(l1,u1))
-    res = scipy.optimize.linprog(-c, A_eq=TA, b_eq=Tb, bounds=LUbnd, options={"disp":True})
+    res = scipy.optimize.linprog(-c, A_eq=TA, b_eq=Tb, bounds=LUbnd, method="highs-ipm", options={"disp":True})
     xproj = res.get('x')
     fproj = np.dot(c,xproj)
         
@@ -992,12 +993,13 @@ def Diet(data, t0, jlleps, runOrg, fstar=None, xstar=None):
 
     # solve projected problem with linprog (highs)
     if dprjfrm2:
-        cc = np.pad(c, (0,2*k)) # c becomes an (n+2k)-array
+        cc = np.pad(c, (0,2*k), constant_values=2*n) # cc:(n+2k)-array pad w/ 'n'
     else:
-        cc = np.pad(c, (0,m))   # c becomes an (n+m)-array
-    res = scipy.optimize.linprog(cc, A_eq=TA, b_eq=Tb, options={"disp":True})
+        cc = np.pad(c, (0,m), constant_values=2*n)   # cd: (n+m)-array pad w/ 'n'
+    res = scipy.optimize.linprog(cc, A_eq=TA, b_eq=Tb, method="highs-ipm", options={"disp":True})
     xsproj = res.get('x')
     xproj = xsproj[0:n]
+    print(np.linalg.norm(c), np.linalg.norm(xproj))
     fproj = np.dot(c,xproj)
 
     tprjslv = time.time() - tsample - torg - t0
@@ -1221,7 +1223,7 @@ def QuantReg(data, t0, jlleps, runOrg, fstar=None, xstar=None):
     lb = np.concatenate([-myInf*np.ones(p-1), np.zeros(2*m)])
     ub = myInf*np.ones(p-1+2*m)
     LU = list(zip(lb,ub))
-    res = scipy.optimize.linprog(c, A_eq=TA, b_eq=Tb, bounds=LU, options={"disp":True})
+    res = scipy.optimize.linprog(c, A_eq=TA, b_eq=Tb, bounds=LU, method="highs-ipm", options={"disp":True, "ipm_optimality_tolerance":1e-5})
     xproj = res.get('x')
     fproj = np.dot(c,xproj)
     
@@ -1361,38 +1363,42 @@ def BasisPursuit(data, t0, jlleps, runOrg, fstar=None, xstar=None):
     ## solve projected formulation
     if debug:
         print("rp4lp:basispursuit: solving projected instance")
-    # # output projected instance
-    # outProjDatBasisPursuit(k,n,s,org, Tb,TA)
-    # basispursuitprj = AMPL()
-    # basispursuitprj.setOption("solver", LPSolverPrj)
-    # solver_options = LPSolverPrj + "_options"
-    # basispursuitprj.setOption(solver_options, prjoptions)
-    # basispursuitprj.read(basispursuitProjMod)
-    # basispursuitprj.readData(basispursuitProjDat)
-    # basispursuitprj.solve()    
-    # # get optimal objective value
-    # objfunprj = basispursuitprj.getObjective("ell1error")
-    # fproj = objfunprj.value()
-    # # get optimal solution
-    # xvarprj = basispursuitprj.getVariable("x")
-    # xproj = np.zeros(n)
-    # for j in range(n):
-    #     xproj[j] = xvarprj[j+1].value()
-    # svvarprj = basispursuitprj.getVariable("sv")
-    # svproj = np.zeros(n)
-    # for j in range(n):
-    #     svproj[j] = svvarprj[j+1].value()
+    # output projected instance
+    outProjDatBasisPursuit(k,n,s,org, TA,Tb)
+    basispursuitprj = AMPL()
+    #basispursuitprj.setOption("solver", LPSolverPrj)
+    basispursuitprj.setOption("solver", "cplex") # force cplex
+    #solver_options = LPSolverPrj + "_options"
+    #solver_options = "cplex_options"             # force cplex options
+    ## baropt is much slower than simplex on basis pursuit - use default opts
+    #basispursuitprj.setOption(solver_options, prjcplexoptions)
+    basispursuitprj.read(basispursuitProjMod)
+    basispursuitprj.readData(basispursuitProjDat)
+    basispursuitprj.solve()    
+    # get optimal objective value
+    objfunprj = basispursuitprj.getObjective("ell1error")
+    fproj = objfunprj.value()
+    # get optimal solution
+    xvarprj = basispursuitprj.getVariable("x")
+    xproj = np.zeros(n)
+    for j in range(n):
+        xproj[j] = xvarprj[j+1].value()
+    svvarprj = basispursuitprj.getVariable("sv")
+    svproj = np.zeros(n)
+    for j in range(n):
+        svproj[j] = svvarprj[j+1].value()
 
-    c = np.concatenate([np.zeros(n), np.ones(n)])
-    Aup = np.hstack([np.identity(n), -1.0*np.identity(n)])
-    Adn = np.hstack([-1.0*np.identity(n), -1.0*np.identity(n)])
-    Aineq = np.vstack([Aup, Adn])
-    bineq = np.zeros(2*n)
-    TA = np.hstack([TA, np.zeros((k,n))])
-    res = scipy.optimize.linprog(c, A_eq=TA, b_eq=Tb, A_ub=Aineq, b_ub=bineq, options={"disp":True})
-    xsproj = res.get('x') # [0:n]:signal; [n:2*n]:absvalreform
-    fproj = np.dot(c,xsproj)
-    xproj = xsproj[0:n]
+    ## highs is inaccurate on basis pursuit
+    # c = np.concatenate([np.zeros(n), np.ones(n)])
+    # Aup = np.hstack([np.identity(n), -1.0*np.identity(n)])
+    # Adn = np.hstack([-1.0*np.identity(n), -1.0*np.identity(n)])
+    # Aineq = np.vstack([Aup, Adn])
+    # bineq = np.zeros(2*n)
+    # TA = np.hstack([TA, np.zeros((k,n))])
+    # res = scipy.optimize.linprog(c, A_eq=TA, b_eq=Tb, A_ub=Aineq, b_ub=bineq, method="highs-ipm", options={"disp":True, 'ipm_optimality_tolerance':1e-5})
+    # xsproj = res.get('x') # [0:n]:signal; [n:2*n]:absvalreform
+    # fproj = np.dot(c,xsproj)
+    # xproj = xsproj[0:n]
     
     tprjslv = time.time() - tsample - torg - t0    
         
